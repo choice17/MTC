@@ -1,0 +1,473 @@
+classdef VehicleFutPathPred
+    
+    properties (Access = private)
+        model
+        modelInfo
+        tripData        
+        modelInput        
+        tarInput
+        normalizeInfo        
+    end
+    
+    properties (Access = public)
+        prediction
+        errorMeasure
+    end
+    
+    methods
+        
+         function obj = VehicleFutPathPred(model_in)
+         %initialize prediction model obj
+            
+            obj.model = model_in.model;
+            
+            modelInfo.freq = model_in.model_info.freq;
+            modelInfo.deltaT = model_in.model_info.deltaT;
+            modelInfo.windowSize = model_in.model_info.windowSize;
+            modelInfo.attr = model_in.model_info.attr;
+            obj.modelInfo = modelInfo;
+            
+            obj.normalizeInfo = setNormalizeInfo(obj);       
+            obj.tripData = [];
+            obj.modelInput = [];
+            obj.prediction = [];
+            obj.tarInput = [];
+            obj.errorMeasure = [];
+            
+         end         
+                               
+         function obj = setTripInfo(obj,trip_in)
+             obj.tripData = trip_in;           
+         end
+         
+         function [predOut,predErr,obj] = pathPredict(obj,trip_in)
+             if nargin == 1
+                 trip_in = obj.tripData;
+             end
+                 obj.tripData = trip_in;
+                 [obj.modelInput,obj.tarInput] = genTripSeg(obj,trip_in);
+                 [predOut,predErr,obj] = modelpredict(obj,obj.modelInput,obj.tarInput);                 
+                 obj.prediction = predOut;
+                 obj.errorMeasure = predErr;
+            
+         end
+         
+         function [modelInput,tarIn] = genSeg(obj,trip_in)
+             if nargin == 1
+                 trip_in = obj.tripData;
+             end
+                 
+                 [modelInput,tarIn] = genTripSeg(obj,trip_in);                
+            
+         end
+         
+         function normalizeInfo = getNormalizeInfo(obj)
+             normalizeInfo = obj.normalizeInfo;
+         end
+         
+         function  [normalizeInfo,obj] = setNormalizeInfo(obj,varargin)
+            % [normalizeInfo,obj] = setNormalizeInfo(obj,varargin)
+            % to get normalize information ! note: it should match the
+            % parameter in the training model @ day1TripTrain object
+            % 'speedNormQ' - mean normalize value for speed
+            % 'speedstd' - std normalize value for speed
+            % 'speedthres' - thresh on value of speed
+            % 'headingm' - mean normalize value for heading (in rad)
+            % 'headingthre' - thresh on value of heading in rad
+            % 'utmSegStd' - std normalize value for utm segment data
+           
+            varlen = length(varargin);
+            normalizeInfo.speedNorm = 20;
+            normalizeInfo.headingm = pi;
+            normalizeInfo.yawNorm = 20;
+            normalizeInfo.gpsSegNorm = normalizeInfo.speedNorm*obj.modelInfo.windowSize/obj.modelInfo.freq;
+            %normalizeInfo.gpsSegNorm = 1;
+            
+            for varNum = 1:2:varlen
+                switch varargin{varNum}
+                    case 'speedNorm'
+                         normalizeInfo.speedNorm = varargin{varNum+1};
+                    case 'headingm'
+                         normalizeInfo.headingm = varargin{varNum+1};
+                    case 'yawNorm'
+                         normalizeInfo.yawNorm = varargin{varNum+1};
+                    case 'gpsSegNorm'
+                         normalizeInfo.gpsSegNorm = varargin{varNum+1};                   
+                end
+            end            
+            
+            obj.normalizeInfo = normalizeInfo;             
+             
+         end
+         
+         
+         
+         function modelInfoOut = modelInformation(obj,show)
+             if nargin == 1
+                 show = 1;
+             end
+             if show 
+                 disp('modelInfo: vehicle future path prediction');
+                 disp(['model freq(Hz): ' num2str(obj.modelInfo.freq)]);
+                 disp(['model delta time(s): ' num2str(obj.modelInfo.deltaT/obj.modelInfo.freq)]);
+                 disp(['model windowSize(s): ' num2str(obj.modelInfo.windowSize/obj.modelInfo.freq)]);
+                 cellfun(@(x) disp(['model input attri: ' x]),obj.modelInfo.attr);
+             end
+             modelInfoOut = obj.modelInfo;
+         end
+                 
+         function viewmodel(obj)
+             view(obj.model);
+         end
+         
+         function model = getmodel(obj)
+             model = obj.model;
+         end
+         
+         function tripData = getTripData(obj)
+             if ~isempty(obj.tripData)
+                 tripData = obj.tripData;
+             else
+                 disp('no trip info in the obj');
+             end
+         end
+         
+         function checkPredict(obj,varargin)
+             if isempty(obj.prediction)
+                 disp('no prediction performed');
+                 disp('please try [~,obj] = pathPredict(obj,trip_in)');
+             else             
+                 if isempty(varargin)
+                     goCheckPredict(obj);
+                 else
+
+                     goCheckPredict(obj,varargin);
+                 end
+             end
+         end
+             
+             
+        
+    end
+end
+
+function [modelInput,tarIn] = genTripSeg(obj,trip_in)
+            
+            % initialize parameter 
+            thisTrip = trip_in;
+            tar_delay = obj.modelInfo.deltaT;
+            windowSize = obj.modelInfo.windowSize;
+            attrLen = length(obj.modelInfo.attr);
+            tripLen = length(thisTrip(:,1));
+            timeStampDim = tripLen-windowSize+1;
+            tarIn =[];
+            
+            % norm info           
+            speedNorm = obj.normalizeInfo.speedNorm;
+            headingm = obj.normalizeInfo.headingm;
+            yawNorm = obj.normalizeInfo.yawNorm;
+            gpsSegNorm = obj.normalizeInfo.gpsSegNorm;
+            
+            % convert to UTM & normalize heading
+            [thisTripX,thisTripY,Zone] = ll2utm(trip_in(:,1),trip_in(:,2));
+            thisTripUTM = zeros(tripLen,attrLen);
+            thisTripUTM(:,[1 2]) = [thisTripY thisTripX];            
+            for attrNum = 3:attrLen
+                switch obj.modelInfo.attr{attrNum}
+                    case 'speed'                       
+                        thisTripUTM(:,attrNum) = thisTrip(:,attrNum)./speedNorm;                       
+                    case 'heading'
+                    	headingInfo = thisTrip(:,attrNum);
+                        headingInfo = degSmooth(headingInfo);
+                        thisTripUTM(:,attrNum) = deg2rad(thisTrip(:,attrNum))-headingm;                       
+                    case 'yaw'
+                        try
+                            thisTripUTM(:,attrNum) = thisTrip(:,attrNum)./yawNorm;
+                        catch
+                            % if there is no yaw rate attribute in the data -
+                            % compute it manually
+                            disp('dataset does not have yaw rate, compute it manually')                            
+                            thisTripUTM(:,attrNum) = computeYawRate(headingInfo)./yawNorm;
+                        end
+                end
+            end
+            
+            if timeStampDim > 0
+                featureCell = zeros(timeStampDim,attrLen*windowSize);
+                startInfo = zeros(timeStampDim,2);
+                if timeStampDim > tar_delay
+                    tarIn = zeros(timeStampDim-tar_delay,2);                    
+                end
+                
+                
+                
+                
+                %rawCell = zeros(timeStampDim,2*windowSize);
+                for timeStamp = 1:timeStampDim
+                    thisfeatCell = thisTripUTM(timeStamp:timeStamp+windowSize-1,:);
+                    startInfo(timeStamp,:) = thisfeatCell(1,[1 2]);
+                    %rawCell(timeStamp,:) = reshape(thisfeatCell',1,[]);
+                    %thisfeatCell = [bsxfun(@minus,thisfeatCell(:,[1 2]),startInfo(timeStamp,:)) thisfeatCell(:,3:end)];
+                    thisfeatCell = [bsxfun(@minus,thisfeatCell(:,[1 2]),startInfo(timeStamp,:))./gpsSegNorm thisfeatCell(:,3:end)];
+                    featureCell(timeStamp,:) = reshape(thisfeatCell',1,[]);
+                    if ~isempty(tarIn)
+                        try
+                            if attrLen>2
+                                %tarIn(timeStamp,:) = thisTripUTM(timeStamp+windowSize+tar_delay-1,[1 2]) - ...
+                                %[startInfo(timeStamp,:) zeros(timeStamp,attrLen-2)];
+                                tarIn(timeStamp,:) = thisTripUTM(timeStamp+windowSize+tar_delay-1,[1 2]) - ...
+                                startInfo(timeStamp,:);
+                            else 
+                                %tarIn(timeStamp,:) = thisTripUTM(timeStamp+windowSize+tar_delay-1,[1 2]) - ...
+                                %startInfo(timeStamp,:);
+                                tarIn(timeStamp,:) = thisTripUTM(timeStamp+windowSize+tar_delay-1,[1 2]) - ...
+                                startInfo(timeStamp,:);
+                            end
+                        end
+                    end
+                    
+                end
+                
+                
+                modelInput.featureCell = featureCell;
+                modelInput.startInfo = startInfo;
+                modelInput.zone = Zone;
+                %modelInput.rawCell = rawCell;
+            else
+                modelInput = [];
+            end
+            
+            
+                
+            
+end
+
+function dist = distance2Point(in_x1,in_y1,in_x2,in_y2)
+    deltaX = in_x2-in_x1;
+    deltaY = in_y2-in_y1;
+
+    dist = sqrt(deltaX.^2 + deltaY.^2);
+end
+
+function heading = heading2Point(in_x1,in_y1,in_x2,in_y2)
+  deltaY = in_y2-in_y1;
+  deltaX = in_x2-in_x1;
+  heading = atan(deltaY ./ deltaX);
+  
+  % region I. deltaX > 0 & deltaY > 0
+  % region II. deltaX < 0 & deltaY > 0
+  heading(deltaX < 0 & deltaY > 0) = heading(deltaX < 0 & deltaY > 0) + pi;
+  % region III. deltaX < 0 & deltaY < 0
+  heading(deltaX < 0 & deltaY < 0) = heading(deltaX < 0 & deltaY < 0) - pi;
+  % region IV. deltaX > 0 & deltaY < 0  
+  
+  % convert to north as 0 deg
+  heading(heading>0) = -2*pi + heading(heading>0);
+  heading = abs(heading);
+  heading = heading + pi/2;
+  heading(heading>2*pi) = heading(heading>2*pi) - 2*pi;
+  heading = rad2deg(heading);
+end
+ 
+function [predOut,predErr,obj] = modelpredict(obj,modelInput,tarIn)
+     if ~isempty(modelInput)
+         
+         % initialize prediction parameter
+         
+         
+         show=false;         
+         modelInformation = obj.modelInformation(show);
+         attrlen = length(modelInformation.attr);
+         attrOut = [];
+         windowSize = modelInformation.windowSize;
+         freq = modelInformation.freq;
+         deltaT = modelInformation.deltaT;
+         
+         this_input = modelInput.featureCell;
+         predOut = obj.model(this_input').*obj.normalizeInfo.gpsSegNorm;
+         if ~isempty(tarIn)
+            pred_X = predOut(1,1:length(tarIn(:,1)))';
+            pred_Y = predOut(2,1:length(tarIn(:,1)))';           
+            predErr = distance2Point(pred_X,pred_Y,tarIn(:,1),tarIn(:,2));
+         end
+         % get the current and pred x y coord i.e. last x y in the segment
+         dist_input = this_input(:,...
+             attrlen*windowSize-(attrlen)+1:attrlen*windowSize-attrlen+2);
+        
+         % for speed estimation
+         % calc the dist / prediction time per data freq
+         speedOut = distance2Point(dist_input(:,2),dist_input(:,1), ...
+            predOut(2,:)',predOut(1,:)')./(deltaT/freq);
+        
+         % for heading estimation
+         headingOut = heading2Point(dist_input(:,2),dist_input(:,1), ...
+            predOut(2,:)',predOut(1,:)');         
+         
+         gpsOut = predOut([1 2],:)'+modelInput.startInfo;
+         gpsOut = utm2ll(gpsOut(:,2),gpsOut(:,1),modelInput.zone);
+         
+        
+%          if attrlen > 2
+%              attrOut = zeros(attrlen-2,size(predOut,2));
+%              for attrnum = 3:attrlen
+%                  switch obj.modelInformation(show).attr{attrnum}
+%                      case 'speed'
+%                           attrOut(attrnum-2,:) = predOut(attrnum,:).*10+10;
+%                      case 'heading'
+%                           attrOut(attrnum-2,:) = rad2deg(predOut(attrnum,:)+pi);
+%                  end
+%              end
+%              attrOut = attrOut';
+%          end
+                          
+         predOut = [gpsOut speedOut headingOut];
+         obj.prediction = predOut;
+         obj.errorMeasure = predErr;
+     else
+         % input data less than model input
+         predOut = [];
+         predErr = [];
+         obj.prediction = [];
+         obj.errorMeasure = [];
+     end
+         
+end
+
+function goCheckPredict(obj,varargin)
+
+% get the varargin, set default value
+varargin = varargin{:};
+varinLen = length(varargin);
+
+zoomRatio = 2;
+mapType='roadmap';
+timePause = 0.01;
+figurePos = [80 100 1300 600];
+updateIter = 50;
+showDirection = 0;
+showSpeed = 0;
+offset = 1;
+AutoAxis = 0;
+if nargin~=1
+    for varIdx = 1:2:varinLen
+        switch varargin{varIdx}
+            case 'zoomRatio'
+                zoomRatio = varargin{varIdx+1};
+            case 'mapType'
+                mapType = varargin{varIdx+1};
+            case 'timePause'
+                timePause = varargin{varIdx+1};
+            case 'figurePos'
+                figurePos = varargin{varIdx+1};
+            case 'updateIter'
+                updateIter = varargin{varIdx+1};
+            case 'offset'
+                offset = varargin{varIdx+1};
+            case 'showDirection'
+                showDirection = varargin{varIdx+1};
+            case 'showSpeed'
+                showSpeed = varargin{varIdx+1};
+            case 'AutoAxis'
+                AutoAxis = varargin{varIdx+1};
+             
+        end
+    end
+end
+
+modelInfo = obj.modelInformation(0);
+windowSize = modelInfo.windowSize;
+featDim = length(modelInfo.attr);
+
+current = obj.getTripData;
+current = current(offset:end,[1 2]);
+if showDirection || showSpeed
+    cur_attr = obj.getTripData;
+    cur_attr = cur_attr(offset:end,3:end);
+end
+pred = obj.prediction(offset:end,:);
+tripLen = size(current,1);
+
+
+
+f1 = figure('Name','plot prediction','pos',figurePos);
+%tripaddr = getAddressByGPS(current(1,[1 2]));
+colorLegend = 'current: blue | pred: red';
+title(colorLegend);
+hold on;
+
+hc =[];
+hgt = [];
+hpr = [];
+try
+    for tIdx = windowSize:tripLen
+        if tIdx == windowSize
+            for initTimeIdx = 1:windowSize
+                hc = [hc plot(current(initTimeIdx,2),current(initTimeIdx,1),'b.')];
+                pause(0.1);
+            end
+
+            set(hc(end),'Marker','v','MarkerSize',10,'MarkerFaceColor','b');
+           axis([current(tIdx,2)-0.004/zoomRatio ...
+                    current(tIdx,2)+0.004/zoomRatio ...
+                    current(tIdx,1)-0.004*0.78/zoomRatio ...
+                    current(tIdx,1)+0.004*0.78/zoomRatio]);
+                 
+            hpr = plot(pred(1,2),pred(1,1),'r.'); 
+            set(hpr(end),'Marker','^','MarkerSize',6,'MarkerFaceColor','r');
+            plot_google_map('MapType',mapType);
+        else
+            if ~isempty(timePause)
+                pause(timePause);        
+            else
+                pause();
+            end
+
+            %1. plot current point
+            hc = [hc plot(current(tIdx,2),current(tIdx,1),'b--.')];
+            set(hc(end),'Marker','diamond','MarkerSize',10,'MarkerFaceColor','b');
+            set(hc(end-1),'Marker','.','MarkerSize',6);
+            %2. recolor past points > 
+            set(hc(tIdx-windowSize),'Marker','.','MarkerSize',6,'Color',[0 0 0]);
+
+            %3. highlight cur segment
+            set(hc(tIdx-windowSize+1:tIdx-1),'Marker','s','MarkerSize',3,'MarkerFaceColor','b');       
+
+            %4. plot gt
+            %hgt = [hgt plot(gt(i,2),gt(i,1),'g.')];
+            %set(hgt(end),'Marker','s','MarkerSize',8,'MarkerFaceColor','g');
+            %set(hgt(end-1),'Marker','.','MarkerSize',6,'MarkerFaceColor','none');
+            
+            %5. plot pred
+            hpr = [hpr plot(pred(tIdx-windowSize+1,2),pred(tIdx-windowSize+1,1),'r.')];
+            set(hpr(end),'Marker','^','MarkerSize',6,'MarkerFaceColor','r');
+            set(hpr(end-1),'Marker','o','MarkerSize',2,'MarkerFaceColor','r');
+            
+            
+            
+            
+            if mod(tIdx,updateIter)==0
+                axis([current(tIdx,2)-0.004/zoomRatio ...
+                    current(tIdx,2)+0.004/zoomRatio ...
+                    current(tIdx,1)-0.004*0.78/zoomRatio ...
+                    current(tIdx,1)+0.004*0.78/zoomRatio]);
+                plot_google_map('MapType',mapType,'ShowLabels',1,'AutoAxis',AutoAxis); 
+            end
+            %}
+
+        end
+
+    end
+catch
+            delete(f1);
+            close all;
+end
+end
+
+function yaw_out = computeYawRate(headingInfo)
+    % yaw angle in degree 
+    yaw_out = [0 ; diff(headingInfo)];
+    
+    % to correct the angle threshold
+    yaw_out(yaw_out>=180) = yaw_out(yaw_out>=180)-2*180;
+    yaw_out(yaw_out<=-180) = yaw_out(yaw_out<=-180)+2*180;
+end

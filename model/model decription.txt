@@ -1,0 +1,33 @@
+% model for demo
+% freq = 1/dt = 3/ws = 5/'lat/lng'
+demoModel.mat
+
+% freq = 2/dt = 4/ws = 10/'lat/lng/speed/heading'
+net-GPS-2017-12-30_141607.mat
+
+% freq = 2/dt = 2/ws = 10/'lat/lng/speed/heading'
+net-GPS-2017-12-30_015622.mat
+
+% freq = 2/dt = 6/ws = 10/'lat/lng/heading'
+net-GPS-2017-08-25_092434.mat 
+
+% freq = 2/dt = 6/ws = 10/'lat/lng'
+net-GPS-2017-08-28_153535.mat
+
+% freq = 1/dt = 3/ws = 5/'lat/lng/speed/heading'
+net-GPS-2017-08-25_170516.mat'
+
+% freq = 1/dt = 3/ws = 5/'lat/lng/
+>net-GPS-2017-08-26_031518.mat
+>model-trainnet1f3s5wlatlng.mat
+>net-GPS-2017-08-26_154201.mat
+>net-GPS-2017-08-26_160600.mat
+
+% freq = 1/dt = 2/ws = 5/'lat/lng/
+net-GPS-2017-08-28_144027.mat
+
+% freq = 1/dt = 1/ws = 5/'lat/lng/
+net-GPS-2017-08-28_145726.mat');
+
+% freq = 10Hz/dt =1/ws = 30 -> 3s/'lat/lng/'
+'net-GPS-2017-11-11_193846.mat'
